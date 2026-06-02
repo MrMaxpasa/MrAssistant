@@ -120,7 +120,7 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
         }
 
     // RecognitionListener: el reconocedor llama a estos métodos desde el hilo principal.
-    private val recognitionListener = object : RecognitionListener {
+    private val recognitionListener: RecognitionListener = object : RecognitionListener {
 
         override fun onReadyForSpeech(params: Bundle?) {}
         override fun onBeginningOfSpeech() {}
