@@ -16,7 +16,7 @@ object GeminiApi {
     private const val ENDPOINT =
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
-    suspend fun generateContent(apiKey: String, prompt: String): String =
+    suspend fun generateContent(apiKey: String, prompt: String, systemInstruction: String): String =
         withContext(Dispatchers.IO) {
             val conn = (URL("$ENDPOINT?key=$apiKey").openConnection()) as HttpURLConnection
             try {
@@ -26,7 +26,15 @@ object GeminiApi {
                 conn.connectTimeout = 15_000
                 conn.readTimeout = 30_000
 
+                // system_instruction va en un campo separado del body, no mezclado
+                // con el mensaje del usuario, para que Gemini lo trate como contexto
+                // de sistema y no como parte del turno de conversación.
                 val body = JSONObject().apply {
+                    put("system_instruction", JSONObject().apply {
+                        put("parts", JSONArray().apply {
+                            put(JSONObject().put("text", systemInstruction))
+                        })
+                    })
                     put("contents", JSONArray().apply {
                         put(JSONObject().apply {
                             put("parts", JSONArray().apply {

@@ -13,6 +13,7 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -52,7 +53,7 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
     init {
         tts = TextToSpeech(app) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                tts?.language = Locale("es", "ES")
+                configureTts()
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {}
                     override fun onDone(utteranceId: String?) {
@@ -66,6 +67,65 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
     }
+
+    private fun configureTts() {
+        val engine = tts ?: return
+        val prefs  = TtsPreferences(getApplication())
+
+        val spanishVoices = engine.voices
+            ?.filter { it.locale.language == "es" }
+            ?.sortedWith(compareByDescending<android.speech.tts.Voice> { it.quality }
+                .thenBy { it.isNetworkConnectionRequired })
+            ?: emptyList()
+
+        val savedName = prefs.voiceName
+        val selectedVoice: android.speech.tts.Voice? = when {
+
+            // 1. El usuario eligió una voz en los ajustes → úsala.
+            savedName != null ->
+                spanishVoices.firstOrNull { it.name == savedName }
+
+            // 2. Auto-detect: busca "male" / "female" en el nombre (patrón Google TTS).
+            AlfredPersona.PREFER_MALE_VOICE ->
+                spanishVoices.firstOrNull { v ->
+                    v.name.contains("male", ignoreCase = true) &&
+                    !v.name.contains("female", ignoreCase = true)
+                }
+                // 3. La voz activa del sistema es española → respétala.
+                // engine.voice es la voz que TTS usaría sin tocar nada.
+                // Si el usuario tiene configurada una voz masculina en Ajustes del
+                // sistema, aquí ya es la correcta y no hace falta llamar setLanguage.
+                ?: engine.voice?.takeIf { it.locale.language == "es" }
+                // 4. Cualquier voz en español instalada.
+                ?: spanishVoices.firstOrNull()
+
+            else ->
+                spanishVoices.firstOrNull { v ->
+                    v.name.contains("female", ignoreCase = true)
+                }
+                ?: engine.voice?.takeIf { it.locale.language == "es" }
+                ?: spanishVoices.firstOrNull()
+        }
+
+        if (selectedVoice != null) {
+            engine.setVoice(selectedVoice)
+            Log.d("AlfredTTS", "Voz activa → ${selectedVoice.name}")
+        } else {
+            // Ninguna voz en español encontrada: forzamos locale como último recurso.
+            // (No llamamos setLanguage si ya tenemos voz española, para no pisarla.)
+            val result = engine.setLanguage(Locale("es", "ES"))
+            if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                engine.setLanguage(Locale("es", "US"))
+            }
+            Log.d("AlfredTTS", "Sin voces españolas instaladas; usando locale es-ES/es-US")
+        }
+
+        engine.setPitch(prefs.pitch)
+        engine.setSpeechRate(prefs.speechRate)
+    }
+
+    /** Llama a esto al volver de los ajustes de voz para aplicar los cambios al TTS activo. */
+    fun reloadTts() = configureTts()
 
     fun startListening() {
         if (_uiState.value.status != AssistantStatus.IDLE) return
@@ -244,7 +304,7 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
         )
         viewModelScope.launch {
             try {
-                val reply = GeminiApi.generateContent(BuildConfig.GEMINI_API_KEY, text)
+                val reply = GeminiApi.generateContent(BuildConfig.GEMINI_API_KEY, text, AlfredPersona.SYSTEM_PROMPT)
                 _uiState.value = _uiState.value.copy(
                     status = AssistantStatus.SPEAKING,
                     responseText = reply

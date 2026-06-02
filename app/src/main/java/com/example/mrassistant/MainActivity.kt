@@ -14,6 +14,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
@@ -32,9 +33,13 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
@@ -47,23 +52,40 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.mrassistant.ui.theme.MrAssistantTheme
 
+private enum class Screen { MAIN, VOICE_SETTINGS }
+
 class MainActivity : ComponentActivity() {
 
-    private val vm: AssistantViewModel by viewModels()
+    private val assistantVm: AssistantViewModel by viewModels()
+    private val voiceVm: VoiceSettingsViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
             MrAssistantTheme {
-                AssistantScreen(vm = vm)
+                var screen by remember { mutableStateOf(Screen.MAIN) }
+                when (screen) {
+                    Screen.MAIN -> AssistantScreen(
+                        vm = assistantVm,
+                        onOpenVoiceSettings = { screen = Screen.VOICE_SETTINGS }
+                    )
+                    Screen.VOICE_SETTINGS -> VoiceSettingsScreen(
+                        vm = voiceVm,
+                        onBack = {
+                            voiceVm.saveSettings()
+                            assistantVm.reloadTts()
+                            screen = Screen.MAIN
+                        }
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-fun AssistantScreen(vm: AssistantViewModel) {
+fun AssistantScreen(vm: AssistantViewModel, onOpenVoiceSettings: () -> Unit) {
     val uiState by vm.uiState.collectAsState()
     val context = LocalContext.current
 
@@ -113,7 +135,16 @@ fun AssistantScreen(vm: AssistantViewModel) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
-        Text("MrAssistant", fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Alfred", fontSize = 28.sp, fontWeight = FontWeight.Bold)
+            TextButton(onClick = onOpenVoiceSettings) {
+                Text("Voz ⚙", fontSize = 13.sp)
+            }
+        }
 
         Surface(
             shape = MaterialTheme.shapes.small,
