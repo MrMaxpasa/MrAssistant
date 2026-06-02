@@ -1,6 +1,7 @@
 package com.example.mrassistant
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -8,27 +9,15 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 class NoInternetException : Exception()
+class RateLimitException : Exception()
 
 object GeminiApi {
 
     private const val ENDPOINT =
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent"
 
-    // Número máximo de turnos herramienta→modelo en una sola petición del usuario.
-    // Protege contra bucles infinitos si el modelo llama herramientas repetidamente.
     private const val MAX_TOOL_TURNS = 5
 
-    /**
-     * Envía [userMessage] a Gemini y gestiona el bucle de function calling.
-     *
-     * Flujo por turno:
-     *   POST → si la respuesta contiene functionCall → ejecuta via [toolExecutor]
-     *        → devuelve los resultados en el turno siguiente → repite
-     *        → cuando la respuesta es solo texto → devuelve ese texto
-     *
-     * @param toolDeclarations  Objeto {"function_declarations":[...]} o null (sin herramientas).
-     * @param toolExecutor      Lambda que recibe (nombre, args) y devuelve el resultado JSON.
-     */
     suspend fun generateContent(
         apiKey: String,
         userMessage: String,
@@ -37,7 +26,6 @@ object GeminiApi {
         toolExecutor: suspend (name: String, args: JSONObject) -> JSONObject = { _, _ -> JSONObject() }
     ): String = withContext(Dispatchers.IO) {
 
-        // El historial crece con cada turno: usuario → modelo → resultados → modelo…
         val contents = JSONArray().apply { put(userTurn(userMessage)) }
 
         repeat(MAX_TOOL_TURNS) {
@@ -53,7 +41,6 @@ object GeminiApi {
                 .filter { it.has("functionCall") }
 
             if (functionCalls.isEmpty()) {
-                // Sin llamadas a herramientas: la respuesta es texto final.
                 return@withContext (0 until parts.length())
                     .mapNotNull { parts.getJSONObject(it).optString("text").takeIf { s -> s.isNotBlank() } }
                     .joinToString(" ")
@@ -61,13 +48,11 @@ object GeminiApi {
                     .ifBlank { "Hecho." }
             }
 
-            // Añade la respuesta del modelo (con sus functionCalls) al historial.
             contents.put(JSONObject().apply {
                 put("role", "model")
                 put("parts", parts)
             })
 
-            // Ejecuta cada herramienta y recoge los resultados.
             val funcResponses = JSONArray()
             for (callPart in functionCalls) {
                 val call = callPart.getJSONObject("functionCall")
@@ -82,7 +67,6 @@ object GeminiApi {
                 })
             }
 
-            // Devuelve los resultados como turno de usuario y continúa el bucle.
             contents.put(JSONObject().apply {
                 put("role", "user")
                 put("parts", funcResponses)
@@ -108,24 +92,38 @@ object GeminiApi {
             put("parts", JSONArray().put(JSONObject().put("text", systemInstruction)))
         })
         put("contents", contents)
-        // Solo incluimos "tools" si hay herramientas registradas.
         if (toolDeclarations != null) {
             put("tools", JSONArray().put(toolDeclarations))
         }
     }
 
-    /** POST síncrono — llámalo solo desde Dispatchers.IO. */
-    private fun post(apiKey: String, body: JSONObject): JSONObject {
+    /**
+     * POST con backoff ante 429: intenta de inmediato, luego espera 2 s y 4 s.
+     * Si el tercer intento también falla con 429 lanza [RateLimitException].
+     */
+    private suspend fun post(apiKey: String, body: JSONObject): JSONObject {
+        val backoff = listOf(2_000L, 4_000L)
+        for (wait in backoff) {
+            try {
+                return doPost(apiKey, body)
+            } catch (e: RateLimitException) {
+                delay(wait)
+            }
+        }
+        return doPost(apiKey, body) // último intento; si falla, lanza
+    }
+
+    private fun doPost(apiKey: String, body: JSONObject): JSONObject {
         val conn = URL("$ENDPOINT?key=$apiKey").openConnection() as HttpURLConnection
         try {
             conn.requestMethod = "POST"
             conn.setRequestProperty("Content-Type", "application/json")
             conn.doOutput = true
             conn.connectTimeout = 15_000
-            conn.readTimeout = 45_000  // más tiempo: puede haber varios turnos de herramienta
+            conn.readTimeout = 45_000
             conn.outputStream.bufferedWriter().use { it.write(body.toString()) }
             val code = conn.responseCode
-            if (code == 429) throw Exception("Límite de solicitudes alcanzado (429). Espera un momento.")
+            if (code == 429) throw RateLimitException()
             if (code !in 200..299) throw Exception("Error del servidor: $code")
             return JSONObject(conn.inputStream.bufferedReader().readText())
         } catch (e: java.io.IOException) {

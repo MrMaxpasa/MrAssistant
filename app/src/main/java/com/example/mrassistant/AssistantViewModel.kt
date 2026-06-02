@@ -334,8 +334,12 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
                     responseText = reply
                 )
                 tts?.speak(reply, TextToSpeech.QUEUE_FLUSH, null, "resp")
+            } catch (e: RateLimitException) {
+                _uiState.value = _uiState.value.copy(
+                    status = AssistantStatus.IDLE,
+                    networkWarning = "He llegado a mi límite de consultas por ahora, Mister. Dame un momento y vuelve a intentarlo."
+                )
             } catch (e: NoInternetException) {
-                // La transcripción funcionó; solo falta red para Gemini.
                 _uiState.value = _uiState.value.copy(
                     status = AssistantStatus.IDLE,
                     networkWarning = "Te he escuchado, pero necesito internet para responderte."
