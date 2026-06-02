@@ -223,7 +223,29 @@ fun AssistantScreen(vm: AssistantViewModel) {
             }
         }
 
-        // Errores — sin cambios.
+        // Aviso de red: la escucha funcionó pero Gemini no tiene conexión.
+        // Color tertiaryContainer (neutro/amber) para diferenciarlo del rojo de error.
+        uiState.networkWarning?.let { warning ->
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                )
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text(
+                        "Sin conexión",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(warning, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                }
+            }
+        }
+
+        // Error duro de escucha/reconocimiento.
         uiState.error?.let { err ->
             Card(
                 modifier = Modifier.fillMaxWidth(),

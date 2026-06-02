@@ -7,6 +7,10 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
+// Excepción específica para "sin red": permite al ViewModel distinguirla
+// de otros errores del servidor o de parseo y mostrar un mensaje amable.
+class NoInternetException : Exception()
+
 object GeminiApi {
 
     private const val ENDPOINT =
@@ -45,8 +49,10 @@ object GeminiApi {
                     .getJSONArray("parts")
                     .getJSONObject(0)
                     .getString("text")
-            } catch (e: java.net.UnknownHostException) {
-                throw Exception("Sin conexión a Internet.")
+            } catch (e: java.io.IOException) {
+                // IOException cubre UnknownHostException, SocketException,
+                // ConnectException y cualquier otro fallo de red.
+                throw NoInternetException()
             } finally {
                 conn.disconnect()
             }
