@@ -1,18 +1,19 @@
 package com.example.mrassistant
 
 import android.Manifest
-import android.app.Activity
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
-import android.speech.RecognizerIntent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
@@ -32,13 +33,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -65,36 +67,12 @@ fun AssistantScreen(vm: AssistantViewModel) {
     val uiState by vm.uiState.collectAsState()
     val context = LocalContext.current
 
+    // Solo pedimos permiso; cuando se concede llamamos vm.startListening()
+    // directamente sin pasar por ningún intent externo.
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) vm.setListening() else vm.onSpeechError()
-    }
-
-    val sttLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        val text = result.data
-            ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-            ?.firstOrNull()
-            .orEmpty()
-        if (result.resultCode == Activity.RESULT_OK && text.isNotBlank()) {
-            vm.onSpeechResult(text)
-        } else {
-            vm.onSpeechError()
-        }
-    }
-
-    // Cuando el estado cambia a LISTENING, lanzamos el diálogo de STT
-    LaunchedEffect(uiState.status) {
-        if (uiState.status == AssistantStatus.LISTENING) {
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-ES")
-                putExtra(RecognizerIntent.EXTRA_PROMPT, "Habla ahora…")
-            }
-            sttLauncher.launch(intent)
-        }
+        if (granted) vm.startListening() else vm.onMicPermissionDenied()
     }
 
     val statusLabel = when (uiState.status) {
@@ -110,6 +88,22 @@ fun AssistantScreen(vm: AssistantViewModel) {
         AssistantStatus.SPEAKING -> Color(0xFF2196F3)
     }
 
+    // --- Animación del halo/círculo pulsante ---
+    // El halo solo es visible en estado LISTENING.
+    // Su escala sube con rmsLevel (0..1) para simular un "latido" de voz.
+    // tween(80 ms) hace que reaccione rápido sin ser errático.
+    val isListening = uiState.status == AssistantStatus.LISTENING
+    val haloScale by animateFloatAsState(
+        targetValue = if (isListening) 1f + uiState.rmsLevel * 0.65f else 1f,
+        animationSpec = tween(durationMillis = 80),
+        label = "halo_scale"
+    )
+    val haloAlpha by animateFloatAsState(
+        targetValue = if (isListening) 0.18f + uiState.rmsLevel * 0.42f else 0f,
+        animationSpec = tween(durationMillis = 150),
+        label = "halo_alpha"
+    )
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -121,7 +115,6 @@ fun AssistantScreen(vm: AssistantViewModel) {
     ) {
         Text("MrAssistant", fontSize = 28.sp, fontWeight = FontWeight.Bold)
 
-        // Pastilla de estado con color dinámico
         Surface(
             shape = MaterialTheme.shapes.small,
             color = statusColor.copy(alpha = 0.15f)
@@ -136,42 +129,80 @@ fun AssistantScreen(vm: AssistantViewModel) {
 
         Spacer(Modifier.height(8.dp))
 
-        // Botón circular grande — sólo activo en reposo
-        Button(
-            onClick = {
-                val hasPerm = ContextCompat.checkSelfPermission(
-                    context, Manifest.permission.RECORD_AUDIO
-                ) == PackageManager.PERMISSION_GRANTED
-                if (hasPerm) vm.setListening()
-                else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-            },
-            enabled = uiState.status == AssistantStatus.IDLE,
-            modifier = Modifier.size(120.dp),
-            shape = CircleShape,
-            contentPadding = PaddingValues(0.dp)
+        // Box que contiene el halo (fondo) y el botón (frente).
+        // El halo ocupa más espacio que el botón para que la escala
+        // animada no quede cortada por los bordes del contenedor.
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.size(170.dp)
         ) {
-            Text("🎙️", fontSize = 40.sp)
+            // Halo: un círculo verde semitransparente que crece con la voz.
+            // Modifier.scale() cambia el tamaño visual sin alterar el layout,
+            // así el botón siempre queda centrado independientemente de la escala.
+            Box(
+                modifier = Modifier
+                    .size(150.dp)
+                    .scale(haloScale)
+                    .background(
+                        color = Color(0xFF4CAF50).copy(alpha = haloAlpha),
+                        shape = CircleShape
+                    )
+            )
+
+            // Botón mic: activo solo en IDLE para evitar dobles pulsaciones.
+            Button(
+                onClick = {
+                    val hasPerm = ContextCompat.checkSelfPermission(
+                        context, Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
+                    if (hasPerm) vm.startListening()
+                    else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                },
+                enabled = uiState.status == AssistantStatus.IDLE,
+                modifier = Modifier.size(110.dp),
+                shape = CircleShape,
+                contentPadding = PaddingValues(0.dp)
+            ) {
+                Text("🎙️", fontSize = 38.sp)
+            }
         }
 
         Text("Hablar", style = MaterialTheme.typography.labelLarge)
 
-        // Lo que el usuario dijo
-        if (uiState.userText.isNotBlank()) {
+        // Área de transcripción: muestra el texto parcial mientras escucha
+        // y el texto final en los demás estados.
+        // Esto evita que el usuario vea "pantalla vacía" mientras habla.
+        val shownText = if (isListening && uiState.partialText.isNotBlank())
+            uiState.partialText
+        else
+            uiState.userText
+
+        val shownLabel = if (isListening && uiState.partialText.isNotBlank())
+            "Transcripción en vivo…"
+        else
+            "Tú dijiste:"
+
+        if (shownText.isNotBlank()) {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp)) {
                     Text(
-                        "Tú dijiste:",
+                        shownLabel,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.primary
                     )
                     Spacer(Modifier.height(4.dp))
-                    Text(uiState.userText)
+                    Text(
+                        shownText,
+                        // El texto parcial aparece en cursiva para indicar que
+                        // todavía está siendo reconocido y puede cambiar.
+                        fontStyle = if (isListening) FontStyle.Italic else FontStyle.Normal
+                    )
                 }
             }
         }
 
-        // Respuesta del asistente
+        // Respuesta del asistente — sin cambios respecto a antes.
         if (uiState.responseText.isNotBlank()) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -192,7 +223,7 @@ fun AssistantScreen(vm: AssistantViewModel) {
             }
         }
 
-        // Error
+        // Errores — sin cambios.
         uiState.error?.let { err ->
             Card(
                 modifier = Modifier.fillMaxWidth(),
