@@ -40,6 +40,11 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
     private var speechRecognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
 
+    // Bandera de reintento: si el reconocedor devuelve ERROR_LANGUAGE_UNAVAILABLE (13)
+    // porque el paquete de español no está instalado, reintentamos sin forzar idioma
+    // para que use el reconocedor en la nube con el locale del sistema.
+    private var retryWithoutLanguage = false
+
     init {
         tts = TextToSpeech(app) { status ->
             if (status == TextToSpeech.SUCCESS) {
@@ -69,6 +74,7 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
 
+        retryWithoutLanguage = false
         _uiState.value = _uiState.value.copy(
             status = AssistantStatus.LISTENING,
             partialText = "",
@@ -103,9 +109,12 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
     private fun buildIntent(): Intent =
         Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-ES")
-            // Resultados parciales: el reconocedor envía texto provisional
-            // mientras hablas, antes de que termine la frase.
+            // Solo forzamos "es-ES" en el primer intento.
+            // Si ya fallamos con código 13 (paquete de español no disponible),
+            // omitimos el idioma y dejamos que el reconocedor use el del sistema.
+            if (!retryWithoutLanguage) {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "es-ES")
+            }
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
         }
@@ -167,6 +176,23 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
             speechRecognizer?.destroy()
             speechRecognizer = null
 
+            // Código 13 = ERROR_LANGUAGE_UNAVAILABLE (API 28+):
+            // el paquete de voz en español no está descargado en el dispositivo.
+            // Estrategia: reintentamos UNA VEZ sin forzar idioma para que el
+            // reconocedor en la nube use el locale del sistema en su lugar.
+            if (error == 13 && !retryWithoutLanguage) {
+                retryWithoutLanguage = true
+                _uiState.value = _uiState.value.copy(
+                    partialText = "",
+                    error = "Paquete de español no disponible; reintentando con el idioma del sistema…"
+                )
+                speechRecognizer = buildRecognizer().also { r ->
+                    r.setRecognitionListener(recognitionListener)
+                    r.startListening(buildIntent())
+                }
+                return
+            }
+
             val message = when (error) {
                 SpeechRecognizer.ERROR_NO_MATCH ->
                     "No entendí nada. Inténtalo de nuevo."
@@ -181,6 +207,7 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
                     "Sin conexión a Internet."
                 SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
                     "Sin permisos de micrófono."
+                13 -> "Idioma no disponible ni con el locale del sistema."
                 else -> "Error del reconocedor (código $error)."
             }
 
