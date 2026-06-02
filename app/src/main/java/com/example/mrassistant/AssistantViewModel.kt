@@ -16,8 +16,11 @@ import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -38,6 +41,11 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _uiState = MutableStateFlow(AssistantUiState())
     val uiState: StateFlow<AssistantUiState> = _uiState.asStateFlow()
+
+    // Emite Unit cuando una herramienta necesita el permiso de ubicación.
+    // MainActivity lo observa y lanza el diálogo del sistema.
+    private val _locationPermRequest = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val locationPermRequest: SharedFlow<Unit> = _locationPermRequest.asSharedFlow()
 
     private var speechRecognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
@@ -310,7 +318,16 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
                     userMessage = text,
                     systemInstruction = AlfredPersona.SYSTEM_PROMPT,
                     toolDeclarations = ToolRegistry.declarations(),
-                    toolExecutor = { name, args -> ToolRegistry.execute(name, args, getApplication()) }
+                    toolExecutor = { name, args ->
+                        val result = ToolRegistry.execute(name, args, getApplication())
+                        // Si la herramienta devuelve "needs_permission":"location",
+                        // lanzamos el diálogo del sistema en paralelo mientras
+                        // Alfred dice en voz alta que necesita el permiso.
+                        if (result.optString("needs_permission") == "location") {
+                            _locationPermRequest.emit(Unit)
+                        }
+                        result
+                    }
                 )
                 _uiState.value = _uiState.value.copy(
                     status = AssistantStatus.SPEAKING,

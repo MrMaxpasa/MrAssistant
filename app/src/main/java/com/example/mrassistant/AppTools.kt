@@ -85,6 +85,8 @@ fun registerAppTools() {
         }
     }
 
+    registerWeatherTool()
+
     // ── Aquí irán las herramientas futuras ────────────────────────────────
-    // set_alarm, get_weather, make_call, send_message, open_app …
+    // set_alarm, make_call, send_message, open_app …
 }

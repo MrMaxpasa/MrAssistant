@@ -35,6 +35,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -95,6 +96,21 @@ fun AssistantScreen(vm: AssistantViewModel, onOpenVoiceSettings: () -> Unit) {
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) vm.startListening() else vm.onMicPermissionDenied()
+    }
+
+    // Launcher para el permiso de ubicación (pedido por la herramienta get_weather).
+    // No hace falta hacer nada en el callback: si se concede, el usuario
+    // puede repetir la pregunta y la herramienta ya tendrá el permiso.
+    val locationPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* Alfred ya habrá explicado en voz alta que necesitaba el permiso */ }
+
+    // Observamos el SharedFlow: cuando la herramienta señala que necesita ubicación,
+    // lanzamos el diálogo del sistema mientras Alfred habla.
+    LaunchedEffect(Unit) {
+        vm.locationPermRequest.collect {
+            locationPermLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
     }
 
     val statusLabel = when (uiState.status) {
