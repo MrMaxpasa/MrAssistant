@@ -51,6 +51,7 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
     private var retryWithoutLanguage = false
 
     init {
+        registerAppTools()
         tts = TextToSpeech(app) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 configureTts()
@@ -304,7 +305,13 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
         )
         viewModelScope.launch {
             try {
-                val reply = GeminiApi.generateContent(BuildConfig.GEMINI_API_KEY, text, AlfredPersona.SYSTEM_PROMPT)
+                val reply = GeminiApi.generateContent(
+                    apiKey = BuildConfig.GEMINI_API_KEY,
+                    userMessage = text,
+                    systemInstruction = AlfredPersona.SYSTEM_PROMPT,
+                    toolDeclarations = ToolRegistry.declarations(),
+                    toolExecutor = { name, args -> ToolRegistry.execute(name, args, getApplication()) }
+                )
                 _uiState.value = _uiState.value.copy(
                     status = AssistantStatus.SPEAKING,
                     responseText = reply
