@@ -16,6 +16,9 @@ import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -34,7 +37,8 @@ data class AssistantUiState(
     val responseText: String = "",
     val error: String? = null,          // error duro: fallo de escucha/reconocimiento
     val networkWarning: String? = null, // aviso suave: escucha OK pero Gemini sin red
-    val rmsLevel: Float = 0f
+    val rmsLevel: Float = 0f,
+    val rateLimitUntilMs: Long? = null  // ms epoch hasta el que Alfred no puede responder
 )
 
 class AssistantViewModel(app: Application) : AndroidViewModel(app) {
@@ -42,10 +46,10 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
     private val _uiState = MutableStateFlow(AssistantUiState())
     val uiState: StateFlow<AssistantUiState> = _uiState.asStateFlow()
 
-    // Emite Unit cuando una herramienta necesita el permiso de ubicación.
-    // MainActivity lo observa y lanza el diálogo del sistema.
-    private val _locationPermRequest = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
-    val locationPermRequest: SharedFlow<Unit> = _locationPermRequest.asSharedFlow()
+    // Emite el nombre del permiso cuando una herramienta lo necesita ("location", "contacts"…).
+    // MainActivity lo observa y lanza el diálogo del sistema correspondiente.
+    private val _permissionRequest = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val permissionRequest: SharedFlow<String> = _permissionRequest.asSharedFlow()
 
     private var speechRecognizer: SpeechRecognizer? = null
     private var tts: TextToSpeech? = null
@@ -166,6 +170,10 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
         _uiState.value = _uiState.value.copy(error = "Permiso de micrófono denegado.")
     }
 
+    fun clearRateLimit() {
+        _uiState.value = _uiState.value.copy(rateLimitUntilMs = null)
+    }
+
     // Comprobación dinámica en cada intento (no cacheada): si el usuario
     // acaba de descargar el paquete on-device, esta llamada ya lo detecta.
     private fun buildRecognizer(): SpeechRecognizer =
@@ -223,7 +231,7 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
                 ?.firstOrNull().orEmpty()
 
             if (text.isNotBlank()) {
-                sendToGemini(text)
+                handleVoiceInput(text)
             } else {
                 _uiState.value = _uiState.value.copy(
                     status = AssistantStatus.IDLE,
@@ -301,7 +309,7 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun sendToGemini(text: String) {
+    private fun handleVoiceInput(text: String) {
         _uiState.value = _uiState.value.copy(
             status = AssistantStatus.THINKING,
             userText = text,
@@ -312,44 +320,148 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
             networkWarning = null
         )
         viewModelScope.launch {
-            try {
-                val reply = GeminiApi.generateContent(
-                    apiKey = BuildConfig.GEMINI_API_KEY,
-                    userMessage = text,
-                    systemInstruction = AlfredPersona.SYSTEM_PROMPT,
-                    toolDeclarations = ToolRegistry.declarations(),
-                    toolExecutor = { name, args ->
-                        val result = ToolRegistry.execute(name, args, getApplication())
-                        // Si la herramienta devuelve "needs_permission":"location",
-                        // lanzamos el diálogo del sistema en paralelo mientras
-                        // Alfred dice en voz alta que necesita el permiso.
-                        if (result.optString("needs_permission") == "location") {
-                            _locationPermRequest.emit(Unit)
-                        }
-                        result
-                    }
-                )
-                _uiState.value = _uiState.value.copy(
-                    status = AssistantStatus.SPEAKING,
-                    responseText = reply
-                )
-                tts?.speak(reply, TextToSpeech.QUEUE_FLUSH, null, "resp")
-            } catch (e: RateLimitException) {
-                _uiState.value = _uiState.value.copy(
-                    status = AssistantStatus.IDLE,
-                    networkWarning = "He llegado a mi límite de consultas por ahora, Mister. Dame un momento y vuelve a intentarlo."
-                )
-            } catch (e: NoInternetException) {
-                _uiState.value = _uiState.value.copy(
-                    status = AssistantStatus.IDLE,
-                    networkWarning = "Te he escuchado, pero necesito internet para responderte."
-                )
-            } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(
-                    status = AssistantStatus.IDLE,
-                    error = e.message ?: "Error desconocido"
-                )
+            // 1. Comandos locales: se ejecutan sin Gemini, incluso con rate limit activo.
+            val cmd = LocalCommandRecognizer.match(text)
+            if (cmd != null) {
+                executeLocalCommand(cmd)
+                return@launch
             }
+            // 2. La frase no encaja con ningún patrón local → necesita Gemini.
+            //    Si hay rate limit activo, Alfred avisa pero no gasta un intento.
+            val rateLimitMs = _uiState.value.rateLimitUntilMs
+            if (rateLimitMs != null) {
+                val remaining = (rateLimitMs - System.currentTimeMillis()) / 1000
+                val reply = "Para eso necesito consultar con mi servidor, Mister, y aún estoy en espera. Quedan ${formatDurationForSpeech(remaining.coerceAtLeast(0))}."
+                _uiState.value = _uiState.value.copy(status = AssistantStatus.SPEAKING, responseText = reply)
+                tts?.speak(reply, TextToSpeech.QUEUE_FLUSH, null, "rate_wait")
+                return@launch
+            }
+            // 3. Sin rate limit → llamada normal a Gemini.
+            callGemini(text)
+        }
+    }
+
+    private suspend fun executeLocalCommand(cmd: LocalCommand) {
+        val result = withContext(Dispatchers.IO) {
+            ToolRegistry.execute(cmd.tool, cmd.args, getApplication())
+        }
+        val needsPerm = result.optString("needs_permission")
+        if (needsPerm.isNotBlank()) _permissionRequest.emit(needsPerm)
+        val reply = localReply(cmd.tool, cmd.args, result)
+        _uiState.value = _uiState.value.copy(status = AssistantStatus.SPEAKING, responseText = reply)
+        tts?.speak(reply, TextToSpeech.QUEUE_FLUSH, null, "local_cmd")
+    }
+
+    private fun localReply(tool: String, args: JSONObject, result: JSONObject): String {
+        if (result.optString("needs_permission").isNotBlank()) return when (tool) {
+            "call_contact" -> "Necesito acceso a tus contactos, Mister. Concédeme el permiso y repítelo."
+            else -> "Necesito un permiso del sistema para eso, Mister."
+        }
+        val ok = result.optBoolean("success", false)
+        return when (tool) {
+            "call_contact" -> if (ok) {
+                "Llamando a ${result.optString("contact", args.optString("name"))}, Mister."
+            } else when (result.optString("error")) {
+                "contact_not_found" -> "No encuentro a ${args.optString("name")} en tu agenda, Mister."
+                "multiple_matches"  -> {
+                    val arr = result.optJSONArray("names")
+                    val names = if (arr != null) (0 until arr.length()).map { arr.getString(it) } else emptyList()
+                    "Tengo varios contactos con ese nombre: ${names.joinToString(", ")}. ¿A cuál te refieres, Mister?"
+                }
+                "too_many_matches" -> "Hay demasiados contactos con ese nombre, Mister. Sé más específico."
+                else -> "No pude marcar el número, Mister."
+            }
+            "call_number" -> if (ok)
+                "Marcando el ${result.optString("dialed", args.optString("number"))}, Mister."
+            else "No pude marcar ese número, Mister."
+            "open_app" -> if (ok)
+                "Abriendo ${result.optString("opened", args.optString("app_name"))}, Mister."
+            else "No encontré esa aplicación instalada, Mister."
+            "set_alarm" -> if (ok) {
+                val h = result.optInt("hour", args.optInt("hour"))
+                val m = result.optInt("minute", args.optInt("minute"))
+                val time = if (m == 0) "las $h en punto" else "las $h y ${"%02d".format(m)}"
+                "Alarma puesta a $time, Mister."
+            } else "No pude crear la alarma, Mister."
+            "set_timer" -> if (ok) {
+                val min = result.optInt("duration_minutes", args.optInt("duration_minutes"))
+                "Temporizador de $min ${if (min == 1) "minuto" else "minutos"} en marcha, Mister."
+            } else "No pude crear el temporizador, Mister."
+            "start_navigation" -> if (ok)
+                "Te llevo a ${result.optString("destination", args.optString("destination"))}, Mister."
+            else "No pude abrir la navegación, Mister."
+            "get_datetime" -> result.optString("datetime").takeIf { it.isNotBlank() }
+                ?: "No pude obtener la hora, Mister."
+            else -> if (ok) "Hecho, Mister." else "Algo fue mal, Mister."
+        }
+    }
+
+    private suspend fun callGemini(text: String) {
+        try {
+            val reply = GeminiApi.generateContent(
+                apiKey = BuildConfig.GEMINI_API_KEY,
+                userMessage = text,
+                systemInstruction = AlfredPersona.SYSTEM_PROMPT,
+                toolDeclarations = ToolRegistry.declarations(),
+                toolExecutor = { name, args ->
+                    val result = ToolRegistry.execute(name, args, getApplication())
+                    val needsPerm = result.optString("needs_permission")
+                    if (needsPerm.isNotBlank()) _permissionRequest.emit(needsPerm)
+                    result
+                }
+            )
+            _uiState.value = _uiState.value.copy(status = AssistantStatus.SPEAKING, responseText = reply)
+            tts?.speak(reply, TextToSpeech.QUEUE_FLUSH, null, "resp")
+        } catch (e: RateLimitException) {
+            val untilMs = if (e.retryAfterSeconds != null) {
+                System.currentTimeMillis() + e.retryAfterSeconds * 1000L
+            } else {
+                nextMidnightPacificMs()
+            }
+            val remainingSeconds = (untilMs - System.currentTimeMillis()) / 1000
+            val announcement = "He llegado a mi límite por ahora, Mister. Recupero fuerzas en ${formatDurationForSpeech(remainingSeconds)}."
+            _uiState.value = _uiState.value.copy(
+                status = AssistantStatus.IDLE,
+                responseText = announcement,
+                rateLimitUntilMs = untilMs
+            )
+            tts?.speak(announcement, TextToSpeech.QUEUE_FLUSH, null, "rate_limit")
+        } catch (e: NoInternetException) {
+            _uiState.value = _uiState.value.copy(
+                status = AssistantStatus.IDLE,
+                networkWarning = "Te he escuchado, pero necesito internet para responderte."
+            )
+        } catch (e: Exception) {
+            _uiState.value = _uiState.value.copy(
+                status = AssistantStatus.IDLE,
+                error = e.message ?: "Error desconocido"
+            )
+        }
+    }
+
+    /** Medianoche hora del Pacífico (America/Los_Angeles), en ms epoch local. */
+    private fun nextMidnightPacificMs(): Long {
+        val pacific = java.util.TimeZone.getTimeZone("America/Los_Angeles")
+        val cal = java.util.Calendar.getInstance(pacific).apply {
+            add(java.util.Calendar.DAY_OF_YEAR, 1)
+            set(java.util.Calendar.HOUR_OF_DAY, 0)
+            set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }
+        return cal.timeInMillis
+    }
+
+    private fun formatDurationForSpeech(totalSeconds: Long): String {
+        val h = totalSeconds / 3600
+        val m = (totalSeconds % 3600) / 60
+        val s = totalSeconds % 60
+        return when {
+            h > 0 -> if (m > 0) "$h ${if (h == 1L) "hora" else "horas"} y $m ${if (m == 1L) "minuto" else "minutos"}"
+                     else "$h ${if (h == 1L) "hora" else "horas"}"
+            m > 0 -> if (s > 0) "$m ${if (m == 1L) "minuto" else "minutos"} y $s ${if (s == 1L) "segundo" else "segundos"}"
+                     else "$m ${if (m == 1L) "minuto" else "minutos"}"
+            else  -> "$s ${if (s == 1L) "segundo" else "segundos"}"
         }
     }
 

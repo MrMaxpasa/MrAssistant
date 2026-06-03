@@ -41,6 +41,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
@@ -98,18 +99,36 @@ fun AssistantScreen(vm: AssistantViewModel, onOpenVoiceSettings: () -> Unit) {
         if (granted) vm.startListening() else vm.onMicPermissionDenied()
     }
 
-    // Launcher para el permiso de ubicación (pedido por la herramienta get_weather).
-    // No hace falta hacer nada en el callback: si se concede, el usuario
-    // puede repetir la pregunta y la herramienta ya tendrá el permiso.
+    // Launchers de permisos de herramientas. El callback puede estar vacío porque
+    // Alfred ya habrá explicado en voz alta que necesitaba el permiso; si se concede,
+    // el usuario vuelve a pedir la acción y la herramienta ya lo encontrará.
     val locationPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { /* Alfred ya habrá explicado en voz alta que necesitaba el permiso */ }
+    ) {}
+    val contactsPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {}
 
-    // Observamos el SharedFlow: cuando la herramienta señala que necesita ubicación,
-    // lanzamos el diálogo del sistema mientras Alfred habla.
+    // Un único efecto observa el SharedFlow y despacha al launcher correcto
+    // según el nombre del permiso que emite la herramienta.
     LaunchedEffect(Unit) {
-        vm.locationPermRequest.collect {
-            locationPermLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+        vm.permissionRequest.collect { permission ->
+            when (permission) {
+                "location" -> locationPermLauncher.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+                "contacts" -> contactsPermLauncher.launch(Manifest.permission.READ_CONTACTS)
+            }
+        }
+    }
+
+    var rateLimitDisplay by remember { mutableStateOf("") }
+    LaunchedEffect(uiState.rateLimitUntilMs) {
+        val until = uiState.rateLimitUntilMs
+        if (until == null) { rateLimitDisplay = ""; return@LaunchedEffect }
+        while (true) {
+            val remaining = (until - System.currentTimeMillis()) / 1000
+            if (remaining <= 0) { vm.clearRateLimit(); break }
+            rateLimitDisplay = formatDurationForDisplay(remaining)
+            delay(1_000L)
         }
     }
 
@@ -270,6 +289,32 @@ fun AssistantScreen(vm: AssistantViewModel, onOpenVoiceSettings: () -> Unit) {
             }
         }
 
+        // Cuenta atrás del límite de velocidad: visible solo mientras rateLimitUntilMs != null.
+        if (uiState.rateLimitUntilMs != null && rateLimitDisplay.isNotBlank()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                )
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text(
+                        "Alfred en espera",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        rateLimitDisplay,
+                        fontSize = 36.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                }
+            }
+        }
+
         // Aviso de red: la escucha funcionó pero Gemini no tiene conexión.
         // Color tertiaryContainer (neutro/amber) para diferenciarlo del rojo de error.
         uiState.networkWarning?.let { warning ->
@@ -308,4 +353,11 @@ fun AssistantScreen(vm: AssistantViewModel, onOpenVoiceSettings: () -> Unit) {
             }
         }
     }
+}
+
+private fun formatDurationForDisplay(totalSeconds: Long): String {
+    val h = totalSeconds / 3600
+    val m = (totalSeconds % 3600) / 60
+    val s = totalSeconds % 60
+    return if (h > 0) "${h}h ${m}m" else "%02d:%02d".format(m, s)
 }

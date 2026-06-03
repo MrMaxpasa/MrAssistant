@@ -9,7 +9,8 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 class NoInternetException : Exception()
-class RateLimitException : Exception()
+/** retryAfterSeconds: segundos que pide esperar la API (null = límite diario sin dato exacto). */
+class RateLimitException(val retryAfterSeconds: Long? = null) : Exception()
 
 object GeminiApi {
 
@@ -98,19 +99,17 @@ object GeminiApi {
     }
 
     /**
-     * POST con backoff ante 429: intenta de inmediato, luego espera 2 s y 4 s.
-     * Si el tercer intento también falla con 429 lanza [RateLimitException].
+     * Un reintento silencioso de 2 s solo cuando la API no indicó tiempo de espera.
+     * Si incluye retryAfterSeconds, lanza inmediatamente para mostrar la cuenta atrás.
      */
     private suspend fun post(apiKey: String, body: JSONObject): JSONObject {
-        val backoff = listOf(2_000L, 4_000L)
-        for (wait in backoff) {
-            try {
-                return doPost(apiKey, body)
-            } catch (e: RateLimitException) {
-                delay(wait)
-            }
+        try {
+            return doPost(apiKey, body)
+        } catch (e: RateLimitException) {
+            if (e.retryAfterSeconds != null) throw e
+            delay(2_000L)
         }
-        return doPost(apiKey, body) // último intento; si falla, lanza
+        return doPost(apiKey, body)
     }
 
     private fun doPost(apiKey: String, body: JSONObject): JSONObject {
@@ -123,13 +122,49 @@ object GeminiApi {
             conn.readTimeout = 45_000
             conn.outputStream.bufferedWriter().use { it.write(body.toString()) }
             val code = conn.responseCode
-            if (code == 429) throw RateLimitException()
+            if (code == 429) {
+                val errorBody = runCatching {
+                    conn.errorStream?.bufferedReader()?.readText() ?: ""
+                }.getOrDefault("")
+                throw RateLimitException(parseRetryAfter(conn, errorBody))
+            }
             if (code !in 200..299) throw Exception("Error del servidor: $code")
             return JSONObject(conn.inputStream.bufferedReader().readText())
+        } catch (e: RateLimitException) {
+            throw e
         } catch (e: java.io.IOException) {
             throw NoInternetException()
         } finally {
             conn.disconnect()
+        }
+    }
+
+    /** Extrae los segundos de espera de la cabecera Retry-After o del cuerpo JSON de error. */
+    private fun parseRetryAfter(conn: HttpURLConnection, errorBody: String): Long? {
+        conn.getHeaderField("Retry-After")?.trim()?.toLongOrNull()?.let { return it }
+        return try {
+            val details = JSONObject(errorBody)
+                .optJSONObject("error")
+                ?.optJSONArray("details") ?: return null
+            for (i in 0 until details.length()) {
+                val retryDelay = details.getJSONObject(i).optString("retryDelay")
+                    .takeIf { it.isNotBlank() } ?: continue
+                return parseDelayString(retryDelay)
+            }
+            null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** Convierte "30s", "2m", "1h" → segundos. Sin unidad se asume segundos. */
+    private fun parseDelayString(delay: String): Long? {
+        val m = Regex("""(\d+)([smh]?)""").find(delay) ?: return null
+        val v = m.groupValues[1].toLongOrNull() ?: return null
+        return when (m.groupValues[2]) {
+            "m"  -> v * 60
+            "h"  -> v * 3600
+            else -> v
         }
     }
 }
