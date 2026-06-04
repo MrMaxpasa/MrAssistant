@@ -1,7 +1,10 @@
 package com.example.mrassistant
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -9,26 +12,42 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.mrassistant.ui.theme.DotoFamily
+import com.example.mrassistant.ui.theme.SpaceMonoFamily
+
+// ── Paleta oscura (igual que la pantalla principal) ───────────────────────
+private val BgColor      = Color(0xFF0D0D0D)
+private val SurfaceColor = Color(0xFF161616)
+private val TextColor    = Color(0xFFE2E2E2)
+private val DimColor     = Color(0xFF444444)
+private val DimText      = Color(0xFF777777)
 
 @Composable
 fun VoiceSettingsScreen(vm: VoiceSettingsViewModel, onBack: () -> Unit) {
@@ -37,13 +56,14 @@ fun VoiceSettingsScreen(vm: VoiceSettingsViewModel, onBack: () -> Unit) {
     val pitch by vm.pitch.collectAsState()
     val speechRate by vm.speechRate.collectAsState()
 
-    // El botón físico de atrás también guarda y vuelve
     BackHandler { vm.saveSettings(); onBack() }
 
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
+            .background(BgColor)
             .statusBarsPadding()
+            .navigationBarsPadding()
     ) {
 
         // ── Cabecera ──────────────────────────────────────────────────────
@@ -51,55 +71,77 @@ fun VoiceSettingsScreen(vm: VoiceSettingsViewModel, onBack: () -> Unit) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 4.dp, end = 16.dp, top = 8.dp, bottom = 4.dp),
+                    .padding(start = 4.dp, end = 20.dp, top = 12.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                TextButton(onClick = { vm.saveSettings(); onBack() }) {
-                    Text("← Guardar", fontWeight = FontWeight.Medium)
+                TextButton(
+                    onClick = { vm.saveSettings(); onBack() },
+                    colors = ButtonDefaults.textButtonColors(contentColor = TextColor)
+                ) {
+                    Text(
+                        "← GUARDAR",
+                        fontFamily   = DotoFamily,
+                        fontWeight   = FontWeight.Medium,
+                        letterSpacing = 2.sp,
+                        fontSize     = 11.sp
+                    )
                 }
                 Spacer(Modifier.weight(1f))
-                Text("Voz de Alfred", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    "VOZ DE ALFRED",
+                    color        = TextColor,
+                    fontSize     = 13.sp,
+                    fontWeight   = FontWeight.Bold,
+                    letterSpacing = 5.sp,
+                    fontFamily   = DotoFamily
+                )
             }
         }
 
-        // ── Sliders ───────────────────────────────────────────────────────
+        // ── Deslizadores ─────────────────────────────────────────────────
         item {
-            Column(Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) {
-                Text(
-                    "Tono: ${"%.2f".format(pitch)}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Slider(
+            Column(
+                modifier = Modifier
+                    .padding(horizontal = 20.dp, vertical = 8.dp)
+                    .background(SurfaceColor, RoundedCornerShape(12.dp))
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+            ) {
+                SliderRow(
+                    label = "TONO",
                     value = pitch,
-                    onValueChange = vm::onPitchChanged,
-                    valueRange = 0.5f..1.5f
+                    formatted = "%.2f".format(pitch),
+                    onValueChange = vm::onPitchChanged
                 )
-                Text(
-                    "Velocidad: ${"%.2f".format(speechRate)}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Slider(
+                Spacer(Modifier.height(8.dp))
+                SliderRow(
+                    label = "VELOCIDAD",
                     value = speechRate,
-                    onValueChange = vm::onSpeechRateChanged,
-                    valueRange = 0.5f..1.5f
+                    formatted = "%.2f".format(speechRate),
+                    onValueChange = vm::onSpeechRateChanged
                 )
             }
         }
 
-        // ── Separador y título de lista ───────────────────────────────────
+        // ── Separador y etiqueta de sección ───────────────────────────────
         item {
-            HorizontalDivider(modifier = Modifier.padding(top = 4.dp))
+            Spacer(Modifier.height(12.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(DimColor)
+            )
             Text(
-                "Voces disponibles (español)",
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.outline
+                text         = "VOCES DISPONIBLES — ESPAÑOL",
+                modifier     = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                color        = DimText,
+                fontSize     = 9.sp,
+                letterSpacing = 2.sp,
+                fontFamily   = DotoFamily
             )
         }
 
-        // ── Lista vacía = cargando ─────────────────────────────────────────
+        // ── Lista vacía ───────────────────────────────────────────────────
         if (voices.isEmpty()) {
             item {
                 Box(
@@ -107,20 +149,72 @@ fun VoiceSettingsScreen(vm: VoiceSettingsViewModel, onBack: () -> Unit) {
                         .fillMaxWidth()
                         .padding(48.dp),
                     contentAlignment = Alignment.Center
-                ) { CircularProgressIndicator() }
+                ) {
+                    CircularProgressIndicator(color = TextColor, strokeWidth = 2.dp)
+                }
             }
         }
 
         // ── Filas de voces ────────────────────────────────────────────────
         items(voices, key = { it.name }) { voice ->
             VoiceRow(
-                item = voice,
+                item       = voice,
                 isSelected = voice.name == selectedVoiceName,
-                onSelect = { vm.onVoiceSelected(voice.name) },
-                onTest = { vm.testVoice(voice) }
+                onSelect   = { vm.onVoiceSelected(voice.name) },
+                onTest     = { vm.testVoice(voice) }
             )
-            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .padding(horizontal = 16.dp)
+                    .background(DimColor)
+            )
         }
+
+        item { Spacer(Modifier.height(16.dp)) }
+    }
+}
+
+@Composable
+private fun SliderRow(
+    label: String,
+    value: Float,
+    formatted: String,
+    onValueChange: (Float) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text         = label,
+            color        = DimText,
+            fontSize     = 9.sp,
+            letterSpacing = 2.sp,
+            fontFamily   = DotoFamily,
+            modifier     = Modifier.width(80.dp)
+        )
+        Slider(
+            value         = value,
+            onValueChange = onValueChange,
+            valueRange    = 0.5f..1.5f,
+            modifier      = Modifier.weight(1f),
+            colors        = SliderDefaults.colors(
+                thumbColor         = Color.White,
+                activeTrackColor   = Color.White,
+                inactiveTrackColor = Color.White.copy(alpha = 0.18f)
+            )
+        )
+        Text(
+            text       = formatted,
+            color      = TextColor,
+            fontSize   = 11.sp,
+            fontFamily = SpaceMonoFamily,
+            modifier   = Modifier
+                .width(40.dp)
+                .padding(start = 8.dp)
+        )
     }
 }
 
@@ -134,44 +228,72 @@ private fun VoiceRow(
     val stars = when {
         item.quality >= 500 -> "★★★"
         item.quality >= 400 -> "★★"
-        else -> "★"
+        else                -> "★"
     }
-    val netLabel = if (item.isNetworkRequired) "· red" else "· sin red"
+    val netLabel = if (item.isNetworkRequired) "red" else "sin red"
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onSelect)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .clickable(
+                indication        = null,
+                interactionSource = remember { MutableInteractionSource() },
+                onClick           = onSelect
+            )
+            .background(if (isSelected) SurfaceColor else Color.Transparent)
+            .padding(horizontal = 16.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // Indicador de selección
+        Box(
+            modifier = Modifier
+                .padding(end = 10.dp)
+                .size(6.dp)
+                .background(
+                    if (isSelected) Color.White else Color.Transparent,
+                    CircleShape
+                )
+                .border(
+                    width = 1.dp,
+                    color = if (isSelected) Color.White else DimColor,
+                    shape = CircleShape
+                )
+        )
+
         Column(Modifier.weight(1f)) {
             Text(
-                text = item.name,
-                fontSize = 13.sp,
-                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                text       = item.name,
+                color      = if (isSelected) Color.White else TextColor,
+                fontSize   = 12.sp,
+                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                fontFamily = SpaceMonoFamily
             )
             Text(
-                text = "${item.locale}  $stars  $netLabel",
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.outline
+                text       = "${item.locale}  $stars  $netLabel",
+                color      = DimText,
+                fontSize   = 10.sp,
+                fontFamily = SpaceMonoFamily
             )
         }
-        if (isSelected) {
-            Text(
-                "✓",
-                modifier = Modifier.padding(horizontal = 8.dp),
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold
-            )
-        } else {
-            Spacer(Modifier.width(28.dp))
-        }
+
         OutlinedButton(
-            onClick = onTest,
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+            onClick        = onTest,
+            border         = androidx.compose.foundation.BorderStroke(
+                1.dp, Color.White.copy(alpha = 0.30f)
+            ),
+            colors         = ButtonDefaults.outlinedButtonColors(
+                contentColor = TextColor
+            ),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+            modifier       = Modifier.height(32.dp)
         ) {
-            Text("Probar", fontSize = 12.sp)
+            Text(
+                "PROBAR",
+                fontSize     = 9.sp,
+                letterSpacing = 1.5.sp,
+                fontFamily   = DotoFamily
+            )
         }
     }
 }
+

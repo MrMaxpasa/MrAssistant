@@ -9,29 +9,25 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -41,18 +37,34 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.example.mrassistant.ui.theme.DotoFamily
 import com.example.mrassistant.ui.theme.MrAssistantTheme
+import com.example.mrassistant.ui.theme.SpaceMonoFamily
+import kotlinx.coroutines.delay
+
+// ── Paleta Nothing ────────────────────────────────────────────────────────
+private val BgColor        = Color(0xFF0D0D0D)
+private val SurfaceColor   = Color(0xFF161616)
+private val TextColor      = Color(0xFFE2E2E2)
+private val DimColor       = Color(0xFF555555)
+private val UserBubbleBg   = Color(0xFF1C1C1E)
+private val AlfredBubbleBg = Color(0xFF111620)
 
 private enum class Screen { MAIN, VOICE_SETTINGS }
 
@@ -91,17 +103,11 @@ fun AssistantScreen(vm: AssistantViewModel, onOpenVoiceSettings: () -> Unit) {
     val uiState by vm.uiState.collectAsState()
     val context = LocalContext.current
 
-    // Solo pedimos permiso; cuando se concede llamamos vm.startListening()
-    // directamente sin pasar por ningún intent externo.
+    // ── Launchers de permisos ─────────────────────────────────────────────
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) vm.startListening() else vm.onMicPermissionDenied()
-    }
+    ) { granted -> if (granted) vm.startListening() else vm.onMicPermissionDenied() }
 
-    // Launchers de permisos de herramientas. El callback puede estar vacío porque
-    // Alfred ya habrá explicado en voz alta que necesitaba el permiso; si se concede,
-    // el usuario vuelve a pedir la acción y la herramienta ya lo encontrará.
     val locationPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) {}
@@ -109,8 +115,6 @@ fun AssistantScreen(vm: AssistantViewModel, onOpenVoiceSettings: () -> Unit) {
         ActivityResultContracts.RequestPermission()
     ) {}
 
-    // Un único efecto observa el SharedFlow y despacha al launcher correcto
-    // según el nombre del permiso que emite la herramienta.
     LaunchedEffect(Unit) {
         vm.permissionRequest.collect { permission ->
             when (permission) {
@@ -120,6 +124,7 @@ fun AssistantScreen(vm: AssistantViewModel, onOpenVoiceSettings: () -> Unit) {
         }
     }
 
+    // ── Cuenta atrás del rate limit ───────────────────────────────────────
     var rateLimitDisplay by remember { mutableStateOf("") }
     LaunchedEffect(uiState.rateLimitUntilMs) {
         val until = uiState.rateLimitUntilMs
@@ -132,227 +137,347 @@ fun AssistantScreen(vm: AssistantViewModel, onOpenVoiceSettings: () -> Unit) {
         }
     }
 
-    val statusLabel = when (uiState.status) {
-        AssistantStatus.IDLE -> "En reposo"
-        AssistantStatus.LISTENING -> "Escuchando…"
-        AssistantStatus.THINKING -> "Pensando…"
-        AssistantStatus.SPEAKING -> "Hablando…"
-    }
-    val statusColor = when (uiState.status) {
-        AssistantStatus.IDLE -> MaterialTheme.colorScheme.outline
-        AssistantStatus.LISTENING -> Color(0xFF4CAF50)
-        AssistantStatus.THINKING -> Color(0xFFFFC107)
-        AssistantStatus.SPEAKING -> Color(0xFF2196F3)
-    }
-
-    // --- Animación del halo/círculo pulsante ---
-    // El halo solo es visible en estado LISTENING.
-    // Su escala sube con rmsLevel (0..1) para simular un "latido" de voz.
-    // tween(80 ms) hace que reaccione rápido sin ser errático.
     val isListening = uiState.status == AssistantStatus.LISTENING
-    val haloScale by animateFloatAsState(
-        targetValue = if (isListening) 1f + uiState.rmsLevel * 0.65f else 1f,
-        animationSpec = tween(durationMillis = 80),
-        label = "halo_scale"
-    )
-    val haloAlpha by animateFloatAsState(
-        targetValue = if (isListening) 0.18f + uiState.rmsLevel * 0.42f else 0f,
-        animationSpec = tween(durationMillis = 150),
-        label = "halo_alpha"
-    )
+    val isIdle      = uiState.status == AssistantStatus.IDLE
+
+    // Estado → color del indicador y texto
+    val statusColor = when (uiState.status) {
+        AssistantStatus.IDLE      -> DimColor
+        AssistantStatus.LISTENING -> Color(0xFFD4221F)
+        AssistantStatus.THINKING  -> Color(0xFFFFD60A)
+        AssistantStatus.SPEAKING  -> Color(0xFF30D158)
+    }
+    val statusLabel = when (uiState.status) {
+        AssistantStatus.IDLE      -> "EN REPOSO"
+        AssistantStatus.LISTENING -> "ESCUCHANDO"
+        AssistantStatus.THINKING  -> "PENSANDO"
+        AssistantStatus.SPEAKING  -> "HABLANDO"
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .background(BgColor)
             .statusBarsPadding()
-            .padding(horizontal = 24.dp, vertical = 16.dp)
-            .verticalScroll(rememberScrollState()),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(20.dp)
+            .navigationBarsPadding()
     ) {
+        // ── Cabecera ──────────────────────────────────────────────────────
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 14.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Alfred", fontSize = 28.sp, fontWeight = FontWeight.Bold)
-            TextButton(onClick = onOpenVoiceSettings) {
-                Text("Voz ⚙", fontSize = 13.sp)
-            }
+            Text(
+                text = "ALFRED",
+                color = Color.White,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 7.sp,
+                fontFamily = DotoFamily
+            )
+            Text(
+                text = "⚙",
+                color = DimColor,
+                fontSize = 18.sp,
+                modifier = Modifier.clickable(
+                    indication = null,
+                    interactionSource = remember { MutableInteractionSource() },
+                    onClick = onOpenVoiceSettings
+                )
+            )
         }
 
-        Surface(
-            shape = MaterialTheme.shapes.small,
-            color = statusColor.copy(alpha = 0.15f)
+        // ── Indicador de estado ────────────────────────────────────────────
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
+            Box(
+                modifier = Modifier
+                    .size(6.dp)
+                    .background(statusColor, CircleShape)
+            )
+            Spacer(modifier = Modifier.size(7.dp))
             Text(
                 text = statusLabel,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                 color = statusColor,
-                fontWeight = FontWeight.Medium
+                fontSize = 10.sp,
+                letterSpacing = 2.5.sp,
+                fontWeight = FontWeight.Medium,
+                fontFamily = DotoFamily
+            )
+        }
+
+        Spacer(Modifier.height(4.dp))
+
+        // ── Avatar ────────────────────────────────────────────────────────
+        Box(
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center
+        ) {
+            AlfredFace(
+                status   = uiState.status,
+                rmsLevel = uiState.rmsLevel,
+                modifier = Modifier.size(240.dp)
             )
         }
 
         Spacer(Modifier.height(8.dp))
 
-        // Box que contiene el halo (fondo) y el botón (frente).
-        // El halo ocupa más espacio que el botón para que la escala
-        // animada no quede cortada por los bordes del contenedor.
-        Box(
-            contentAlignment = Alignment.Center,
-            modifier = Modifier.size(170.dp)
+        // ── Chat ──────────────────────────────────────────────────────────
+        val scrollState = rememberScrollState()
+        LaunchedEffect(uiState.userText, uiState.responseText) {
+            scrollState.animateScrollTo(scrollState.maxValue)
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .verticalScroll(scrollState)
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Halo: un círculo verde semitransparente que crece con la voz.
-            // Modifier.scale() cambia el tamaño visual sin alterar el layout,
-            // así el botón siempre queda centrado independientemente de la escala.
+            Spacer(Modifier.height(2.dp))
+
+            // Texto del usuario (parcial mientras escucha, final después)
+            val shownUser = if (isListening && uiState.partialText.isNotBlank())
+                uiState.partialText else uiState.userText
+            if (shownUser.isNotBlank()) {
+                UserBubble(
+                    text      = shownUser,
+                    isPartial = isListening && uiState.partialText.isNotBlank()
+                )
+            }
+
+            // Respuesta de Alfred
+            if (uiState.responseText.isNotBlank()) {
+                AlfredBubble(uiState.responseText)
+            }
+
+            // Rate limit activo
+            if (uiState.rateLimitUntilMs != null && rateLimitDisplay.isNotBlank()) {
+                RateLimitBubble(rateLimitDisplay)
+            }
+
+            // Aviso de red
+            uiState.networkWarning?.let {
+                StatusNote(text = it, color = Color(0xFFFFD60A))
+            }
+
+            // Error duro
+            uiState.error?.let {
+                StatusNote(text = it, color = Color(0xFFFF453A))
+            }
+
+            Spacer(Modifier.height(2.dp))
+        }
+
+        // ── Botón de micrófono ─────────────────────────────────────────────
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 10.dp, bottom = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
             Box(
                 modifier = Modifier
-                    .size(150.dp)
-                    .scale(haloScale)
-                    .background(
-                        color = Color(0xFF4CAF50).copy(alpha = haloAlpha),
-                        shape = CircleShape
+                    .size(68.dp)
+                    .nothingCircleButton(
+                        bgColor     = SurfaceColor,
+                        borderColor = if (isIdle) Color.White
+                                      else Color.White.copy(alpha = 0.18f)
                     )
-            )
-
-            // Botón mic: activo solo en IDLE para evitar dobles pulsaciones.
-            Button(
-                onClick = {
-                    val hasPerm = ContextCompat.checkSelfPermission(
-                        context, Manifest.permission.RECORD_AUDIO
-                    ) == PackageManager.PERMISSION_GRANTED
-                    if (hasPerm) vm.startListening()
-                    else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                },
-                enabled = uiState.status == AssistantStatus.IDLE,
-                modifier = Modifier.size(110.dp),
-                shape = CircleShape,
-                contentPadding = PaddingValues(0.dp)
-            ) {
-                Text("🎙️", fontSize = 38.sp)
-            }
-        }
-
-        Text("Hablar", style = MaterialTheme.typography.labelLarge)
-
-        // Área de transcripción: muestra el texto parcial mientras escucha
-        // y el texto final en los demás estados.
-        // Esto evita que el usuario vea "pantalla vacía" mientras habla.
-        val shownText = if (isListening && uiState.partialText.isNotBlank())
-            uiState.partialText
-        else
-            uiState.userText
-
-        val shownLabel = if (isListening && uiState.partialText.isNotBlank())
-            "Transcripción en vivo…"
-        else
-            "Tú dijiste:"
-
-        if (shownText.isNotBlank()) {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
-                    Text(
-                        shownLabel,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        shownText,
-                        // El texto parcial aparece en cursiva para indicar que
-                        // todavía está siendo reconocido y puede cambiar.
-                        fontStyle = if (isListening) FontStyle.Italic else FontStyle.Normal
-                    )
-                }
-            }
-        }
-
-        // Respuesta del asistente — sin cambios respecto a antes.
-        if (uiState.responseText.isNotBlank()) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.secondaryContainer
-                )
-            ) {
-                Column(Modifier.padding(16.dp)) {
-                    Text(
-                        "Respuesta:",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.secondary
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(uiState.responseText)
-                }
-            }
-        }
-
-        // Cuenta atrás del límite de velocidad: visible solo mientras rateLimitUntilMs != null.
-        if (uiState.rateLimitUntilMs != null && rateLimitDisplay.isNotBlank()) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
-                )
-            ) {
-                Column(Modifier.padding(16.dp)) {
-                    Text(
-                        "Alfred en espera",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        rateLimitDisplay,
-                        fontSize = 36.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer
-                    )
-                }
-            }
-        }
-
-        // Aviso de red: la escucha funcionó pero Gemini no tiene conexión.
-        // Color tertiaryContainer (neutro/amber) para diferenciarlo del rojo de error.
-        uiState.networkWarning?.let { warning ->
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
-                )
-            ) {
-                Column(Modifier.padding(16.dp)) {
-                    Text(
-                        "Sin conexión",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(warning, color = MaterialTheme.colorScheme.onTertiaryContainer)
-                }
-            }
-        }
-
-        // Error duro de escucha/reconocimiento.
-        uiState.error?.let { err ->
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer
-                )
+                    .clip(CircleShape)
+                    .clickable(
+                        enabled           = isIdle,
+                        indication        = null,
+                        interactionSource = remember { MutableInteractionSource() }
+                    ) {
+                        val hasPerm = ContextCompat.checkSelfPermission(
+                            context, Manifest.permission.RECORD_AUDIO
+                        ) == PackageManager.PERMISSION_GRANTED
+                        if (hasPerm) vm.startListening()
+                        else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    },
+                contentAlignment = Alignment.Center
             ) {
                 Text(
-                    err,
-                    modifier = Modifier.padding(16.dp),
-                    color = MaterialTheme.colorScheme.error
+                    text = when (uiState.status) {
+                        AssistantStatus.IDLE      -> "◎"
+                        AssistantStatus.LISTENING -> "◉"
+                        AssistantStatus.THINKING  -> "⋯"
+                        AssistantStatus.SPEAKING  -> "◈"
+                    },
+                    color     = if (isIdle) Color.White else Color.White.copy(alpha = 0.22f),
+                    fontSize  = 24.sp
                 )
             }
+
+            Spacer(Modifier.height(7.dp))
+
+            Text(
+                text = when (uiState.status) {
+                    AssistantStatus.IDLE      -> "PULSA PARA HABLAR"
+                    AssistantStatus.LISTENING -> "ESCUCHANDO"
+                    AssistantStatus.THINKING  -> "PENSANDO"
+                    AssistantStatus.SPEAKING  -> "HABLANDO"
+                },
+                color        = Color.White.copy(alpha = 0.28f),
+                fontSize     = 9.sp,
+                letterSpacing = 2.sp,
+                fontFamily   = DotoFamily
+            )
         }
     }
+}
+
+// ── Burbuja de usuario ────────────────────────────────────────────────────
+@Composable
+private fun UserBubble(text: String, isPartial: Boolean = false) {
+    Box(modifier = Modifier.fillMaxWidth()) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .widthIn(max = 280.dp)
+                .nothingBubble(UserBubbleBg, Color.White.copy(alpha = 0.28f), 14.dp)
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+        ) {
+            Text(
+                text       = text,
+                color      = if (isPartial) TextColor.copy(alpha = 0.55f) else TextColor,
+                fontSize   = 13.sp,
+                fontFamily = SpaceMonoFamily,
+                fontStyle  = if (isPartial) FontStyle.Italic else FontStyle.Normal
+            )
+        }
+    }
+}
+
+// ── Burbuja de Alfred ─────────────────────────────────────────────────────
+@Composable
+private fun AlfredBubble(text: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top
+    ) {
+        // Pequeño identificador "A" a la izquierda
+        Box(
+            modifier = Modifier
+                .padding(top = 4.dp, end = 8.dp)
+                .size(22.dp)
+                .background(SurfaceColor, CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text      = "A",
+                color     = Color.White.copy(alpha = 0.6f),
+                fontSize  = 10.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Box(
+            modifier = Modifier
+                .widthIn(max = 268.dp)
+                .nothingBubble(AlfredBubbleBg, Color.White.copy(alpha = 0.22f), 14.dp)
+                .padding(horizontal = 14.dp, vertical = 10.dp)
+        ) {
+            Text(text = text, color = TextColor, fontSize = 13.sp, fontFamily = SpaceMonoFamily)
+        }
+    }
+}
+
+// ── Burbuja de rate limit ─────────────────────────────────────────────────
+@Composable
+private fun RateLimitBubble(countdown: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(top = 2.dp, end = 8.dp)
+                .size(22.dp)
+                .background(SurfaceColor, CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Text("A", color = Color.White.copy(alpha = 0.6f), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        }
+        Column {
+            Text(
+                text       = "EN ESPERA",
+                color      = Color.White.copy(alpha = 0.35f),
+                fontSize   = 9.sp,
+                letterSpacing = 2.sp,
+                fontFamily = DotoFamily
+            )
+            Text(
+                text       = countdown,
+                color      = Color.White.copy(alpha = 0.85f),
+                fontSize   = 28.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp,
+                fontFamily = DotoFamily
+            )
+        }
+    }
+}
+
+// ── Nota de estado (red / error) ──────────────────────────────────────────
+@Composable
+private fun StatusNote(text: String, color: Color) {
+    Text(
+        text      = text,
+        color     = color.copy(alpha = 0.80f),
+        fontSize  = 12.sp,
+        textAlign = TextAlign.Center,
+        modifier  = Modifier.fillMaxWidth().padding(vertical = 2.dp)
+    )
+}
+
+// ── Modificadores de estilo Nothing ──────────────────────────────────────
+
+/** Fondo + borde punteado en una sola pasada DrawBehind. */
+private fun Modifier.nothingBubble(
+    bgColor: Color,
+    borderColor: Color,
+    cornerRadius: Dp
+): Modifier = drawBehind {
+    val cr = CornerRadius(cornerRadius.toPx(), cornerRadius.toPx())
+    drawRoundRect(color = bgColor, cornerRadius = cr)
+    drawRoundRect(
+        color       = borderColor,
+        cornerRadius = cr,
+        style       = Stroke(
+            width      = 1.dp.toPx(),
+            pathEffect = PathEffect.dashPathEffect(
+                floatArrayOf(3.dp.toPx(), 5.dp.toPx()), 0f
+            )
+        )
+    )
+}
+
+/** Círculo relleno + borde punteado para el botón de micrófono. */
+private fun Modifier.nothingCircleButton(
+    bgColor: Color,
+    borderColor: Color
+): Modifier = drawBehind {
+    val r = minOf(size.width, size.height) / 2f
+    drawCircle(color = bgColor, radius = r)
+    drawCircle(
+        color  = borderColor,
+        radius = r - 1.dp.toPx(),
+        style  = Stroke(
+            width      = 1.5.dp.toPx(),
+            pathEffect = PathEffect.dashPathEffect(
+                floatArrayOf(3.dp.toPx(), 5.dp.toPx()), 0f
+            )
+        )
+    )
 }
 
 private fun formatDurationForDisplay(totalSeconds: Long): String {
