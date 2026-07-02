@@ -18,12 +18,29 @@ object LocalCommandRecognizer {
 
     fun match(text: String): LocalCommand? {
         val norm = normalize(text)
-        return tryCall(norm, text)
-            ?: tryOpenApp(norm, text)
-            ?: trySetAlarm(norm)
-            ?: trySetTimer(norm)
-            ?: tryNavigation(norm, text)
-            ?: tryGetDatetime(norm)
+        val (trimmedNorm, trimmedOriginal) = stripAlfredPrefix(norm, text)
+        return tryCall(trimmedNorm, trimmedOriginal)
+            ?: tryOpenApp(trimmedNorm, trimmedOriginal)
+            ?: trySetAlarm(trimmedNorm)
+            ?: trySetTimer(trimmedNorm)
+            ?: tryNavigation(trimmedNorm, trimmedOriginal)
+            ?: tryGetDatetime(trimmedNorm)
+    }
+
+    // Regex que detecta "alfred" u "oye alfred" con coma opcional al inicio de la frase.
+    // Así "Alfred, pon un timer" y "oye Alfred pon un timer" funcionan igual que sin el nombre.
+    private val ALFRED_PREFIX = Regex("""^(oye\s+)?alfred\s*,?\s*""", RegexOption.IGNORE_CASE)
+
+    private fun stripAlfredPrefix(norm: String, original: String): Pair<String, String> {
+        val normMatch = ALFRED_PREFIX.find(norm) ?: return Pair(norm, original)
+        val strippedNorm = norm.substring(normMatch.value.length)
+        // Aplicamos la misma regex al original (IGNORE_CASE ya está activo) para preservar
+        // acentos y mayúsculas en el argumento que extraerán los handlers.
+        val origMatch = ALFRED_PREFIX.find(original.trim())
+        val strippedOriginal = if (origMatch != null)
+            original.trim().substring(origMatch.value.length)
+        else original
+        return Pair(strippedNorm, strippedOriginal)
     }
 
     // ── Llamada ────────────────────────────────────────────────────────────

@@ -61,17 +61,19 @@ import kotlinx.coroutines.delay
 // ── Paleta Nothing ────────────────────────────────────────────────────────
 private val BgColor        = Color(0xFF0D0D0D)
 private val SurfaceColor   = Color(0xFF161616)
-private val TextColor      = Color(0xFFE2E2E2)
+private val TextColor      = Color(0xFFF5F5F5)   // texto principal de burbujas y UI
 private val DimColor       = Color(0xFF555555)
-private val UserBubbleBg   = Color(0xFF1C1C1E)
-private val AlfredBubbleBg = Color(0xFF111620)
+private val UserBubbleBg   = Color(0xFF2A2A2A)   // gris más claro  — ajusta aquí
+private val AlfredBubbleBg = Color(0xFF161616)   // gris más oscuro — ajusta aquí
+private val BubbleBorderColor = Color.White.copy(alpha = 0.22f) // borde punteado común
 
-private enum class Screen { MAIN, VOICE_SETTINGS }
+private enum class Screen { MAIN, VOICE_SETTINGS, LOCAL_LLM }
 
 class MainActivity : ComponentActivity() {
 
     private val assistantVm: AssistantViewModel by viewModels()
     private val voiceVm: VoiceSettingsViewModel by viewModels()
+    private val localLlmVm: LocalLlmViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -82,7 +84,8 @@ class MainActivity : ComponentActivity() {
                 when (screen) {
                     Screen.MAIN -> AssistantScreen(
                         vm = assistantVm,
-                        onOpenVoiceSettings = { screen = Screen.VOICE_SETTINGS }
+                        onOpenVoiceSettings = { screen = Screen.VOICE_SETTINGS },
+                        onOpenLocalLlm      = { screen = Screen.LOCAL_LLM }
                     )
                     Screen.VOICE_SETTINGS -> VoiceSettingsScreen(
                         vm = voiceVm,
@@ -92,6 +95,10 @@ class MainActivity : ComponentActivity() {
                             screen = Screen.MAIN
                         }
                     )
+                    Screen.LOCAL_LLM -> LocalLlmScreen(
+                        vm = localLlmVm,
+                        onBack = { screen = Screen.MAIN }
+                    )
                 }
             }
         }
@@ -99,7 +106,11 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun AssistantScreen(vm: AssistantViewModel, onOpenVoiceSettings: () -> Unit) {
+fun AssistantScreen(
+    vm: AssistantViewModel,
+    onOpenVoiceSettings: () -> Unit,
+    onOpenLocalLlm: () -> Unit = {}
+) {
     val uiState by vm.uiState.collectAsState()
     val context = LocalContext.current
 
@@ -177,16 +188,39 @@ fun AssistantScreen(vm: AssistantViewModel, onOpenVoiceSettings: () -> Unit) {
                 letterSpacing = 7.sp,
                 fontFamily = DotoFamily
             )
-            Text(
-                text = "⚙",
-                color = DimColor,
-                fontSize = 18.sp,
-                modifier = Modifier.clickable(
-                    indication = null,
-                    interactionSource = remember { MutableInteractionSource() },
-                    onClick = onOpenVoiceSettings
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Indicador de estado de Gemma (solo visible cuando el modelo existe)
+                val gemmaColor = when (uiState.gemmaStatus) {
+                    GemmaStatus.READY       -> Color(0xFF30D158)  // verde: listo
+                    GemmaStatus.LOADING     -> DimColor           // gris: cargando
+                    GemmaStatus.UNAVAILABLE -> Color.Transparent  // oculto
+                }
+                if (uiState.gemmaStatus != GemmaStatus.UNAVAILABLE) {
+                    Box(Modifier.size(5.dp).background(gemmaColor, CircleShape))
+                    Spacer(Modifier.size(8.dp))
+                }
+                Text(
+                    text          = "◈",
+                    color         = DimColor,
+                    fontSize      = 16.sp,
+                    modifier      = Modifier.clickable(
+                        indication        = null,
+                        interactionSource = remember { MutableInteractionSource() },
+                        onClick           = onOpenLocalLlm
+                    )
                 )
-            )
+                Spacer(Modifier.size(16.dp))
+                Text(
+                    text = "⚙",
+                    color = DimColor,
+                    fontSize = 18.sp,
+                    modifier = Modifier.clickable(
+                        indication = null,
+                        interactionSource = remember { MutableInteractionSource() },
+                        onClick = onOpenVoiceSettings
+                    )
+                )
+            }
         }
 
         // ── Indicador de estado ────────────────────────────────────────────
@@ -256,7 +290,7 @@ fun AssistantScreen(vm: AssistantViewModel, onOpenVoiceSettings: () -> Unit) {
 
             // Respuesta de Alfred
             if (uiState.responseText.isNotBlank()) {
-                AlfredBubble(uiState.responseText)
+                AlfredBubble(uiState.responseText, uiState.brainUsed)
             }
 
             // Rate limit activo
@@ -344,7 +378,7 @@ private fun UserBubble(text: String, isPartial: Boolean = false) {
             modifier = Modifier
                 .align(Alignment.CenterEnd)
                 .widthIn(max = 280.dp)
-                .nothingBubble(UserBubbleBg, Color.White.copy(alpha = 0.28f), 14.dp)
+                .nothingBubble(UserBubbleBg, BubbleBorderColor, 14.dp)
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
             Text(
@@ -360,7 +394,7 @@ private fun UserBubble(text: String, isPartial: Boolean = false) {
 
 // ── Burbuja de Alfred ─────────────────────────────────────────────────────
 @Composable
-private fun AlfredBubble(text: String) {
+private fun AlfredBubble(text: String, brain: Brain? = null) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.Top
@@ -380,13 +414,24 @@ private fun AlfredBubble(text: String) {
                 fontWeight = FontWeight.Bold
             )
         }
-        Box(
-            modifier = Modifier
-                .widthIn(max = 268.dp)
-                .nothingBubble(AlfredBubbleBg, Color.White.copy(alpha = 0.22f), 14.dp)
-                .padding(horizontal = 14.dp, vertical = 10.dp)
-        ) {
-            Text(text = text, color = TextColor, fontSize = 13.sp, fontFamily = SpaceMonoFamily)
+        androidx.compose.foundation.layout.Column {
+            Box(
+                modifier = Modifier
+                    .widthIn(max = 268.dp)
+                    .nothingBubble(AlfredBubbleBg, BubbleBorderColor, 14.dp)
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
+            ) {
+                Text(text = text, color = TextColor, fontSize = 13.sp, fontFamily = SpaceMonoFamily)
+            }
+            // Indicador de cerebro: ☁ = Gemini (nube), ⊕ = Gemma (local)
+            if (brain != null) {
+                Text(
+                    text      = if (brain == Brain.GEMINI) "☁" else "⊕",
+                    color     = DimColor,
+                    fontSize  = 10.sp,
+                    modifier  = Modifier.padding(start = 3.dp, top = 2.dp)
+                )
+            }
         }
     }
 }

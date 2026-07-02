@@ -1,5 +1,6 @@
 package com.example.mrassistant
 
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -8,9 +9,18 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
+private const val TAG = "GeminiApi"
+
 class NoInternetException : Exception()
-/** retryAfterSeconds: segundos que pide esperar la API (null = límite diario sin dato exacto). */
-class RateLimitException(val retryAfterSeconds: Long? = null) : Exception()
+/**
+ * retryAfterSeconds: segundos que pide esperar la API (null = límite diario sin dato exacto).
+ * pendingToolSummary: si el 429 llegó tras ejecutar herramientas, contiene el resultado
+ * de esas herramientas para que otro modelo pueda redactar la respuesta final.
+ */
+class RateLimitException(
+    val retryAfterSeconds: Long? = null,
+    val pendingToolSummary: String? = null
+) : Exception()
 
 object GeminiApi {
 
@@ -30,7 +40,14 @@ object GeminiApi {
         val contents = JSONArray().apply { put(userTurn(userMessage)) }
 
         repeat(MAX_TOOL_TURNS) {
-            val response = post(apiKey, buildBody(systemInstruction, contents, toolDeclarations))
+            // Si el 429 llega aquí, contents puede tener ya resultados de herramientas.
+            // Los extraemos y los incluimos en la excepción para que BrainRouter
+            // pueda pasárselos a Gemma como contexto para redactar la respuesta final.
+            val response = try {
+                post(apiKey, buildBody(systemInstruction, contents, toolDeclarations))
+            } catch (e: RateLimitException) {
+                throw RateLimitException(e.retryAfterSeconds, extractToolSummary(contents))
+            }
             val parts = response
                 .getJSONArray("candidates")
                 .getJSONObject(0)
@@ -79,6 +96,26 @@ object GeminiApi {
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
+    /**
+     * Extrae resultados de herramientas ya ejecutados del historial de contents.
+     * Devuelve null si no hay ninguno (el 429 llegó antes de que se llamara alguna herramienta).
+     */
+    private fun extractToolSummary(contents: JSONArray): String? {
+        val sb = StringBuilder()
+        for (i in 0 until contents.length()) {
+            val content = contents.getJSONObject(i)
+            if (content.optString("role") != "user") continue
+            val parts = content.optJSONArray("parts") ?: continue
+            for (j in 0 until parts.length()) {
+                val fr = parts.getJSONObject(j).optJSONObject("functionResponse") ?: continue
+                val name = fr.optString("name", "herramienta")
+                val resp = fr.optJSONObject("response")?.toString() ?: continue
+                sb.append("$name: $resp\n")
+            }
+        }
+        return sb.toString().trim().takeIf { it.isNotBlank() }
+    }
+
     private fun userTurn(text: String): JSONObject = JSONObject().apply {
         put("role", "user")
         put("parts", JSONArray().put(JSONObject().put("text", text)))
@@ -107,6 +144,8 @@ object GeminiApi {
             return doPost(apiKey, body)
         } catch (e: RateLimitException) {
             if (e.retryAfterSeconds != null) throw e
+            // 429 sin tiempo de espera → un reintento silencioso a los 2 s
+            Log.w(TAG, "429 sin Retry-After → reintento en 2 s")
             delay(2_000L)
         }
         return doPost(apiKey, body)
@@ -122,17 +161,32 @@ object GeminiApi {
             conn.readTimeout = 45_000
             conn.outputStream.bufferedWriter().use { it.write(body.toString()) }
             val code = conn.responseCode
+
             if (code == 429) {
                 val errorBody = runCatching {
                     conn.errorStream?.bufferedReader()?.readText() ?: ""
                 }.getOrDefault("")
+                val retryAfterHeader = conn.getHeaderField("Retry-After")
+                Log.w(TAG, "HTTP 429 – rate limit | Retry-After=$retryAfterHeader | body=$errorBody")
                 throw RateLimitException(parseRetryAfter(conn, errorBody))
             }
-            if (code !in 200..299) throw Exception("Error del servidor: $code")
-            return JSONObject(conn.inputStream.bufferedReader().readText())
+
+            if (code !in 200..299) {
+                val errorBody = runCatching {
+                    conn.errorStream?.bufferedReader()?.readText() ?: ""
+                }.getOrDefault("")
+                Log.e(TAG, "HTTP $code – error de servidor | body=$errorBody")
+                throw Exception("Error del servidor: $code")
+            }
+
+            val responseText = conn.inputStream.bufferedReader().readText()
+            Log.d(TAG, "HTTP $code OK | ${responseText.length} chars")
+            return JSONObject(responseText)
+
         } catch (e: RateLimitException) {
             throw e
         } catch (e: java.io.IOException) {
+            Log.e(TAG, "IOException: ${e.message}")
             throw NoInternetException()
         } finally {
             conn.disconnect()
